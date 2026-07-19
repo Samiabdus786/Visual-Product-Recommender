@@ -95,9 +95,8 @@ models at once gets close to that. If it starts throwing memory errors:
 
 ## 8. After it's live
 
-Drop this at the very top of the README:
 ```markdown
-🔗 **[Live Demo](https://your-app-name.streamlit.app)**
+🔗 **[Live Demo](https://visual-appuct-recommender-vueqmanj.streamlit.app/)**
 ```
 Honestly the one line most people will actually click.
 
