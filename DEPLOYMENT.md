@@ -96,7 +96,7 @@ models at once gets close to that. If it starts throwing memory errors:
 ## 8. After it's live
 
 ```markdown
-🔗 **[Live Demo](https://visual-appuct-recommender-vueqmanj.streamlit.app/)**
+🔗 **[Live Demo](https://visual-appuct-recommender-vueqmanj.streamlit.app)**
 ```
 Honestly the one line most people will actually click.
 
