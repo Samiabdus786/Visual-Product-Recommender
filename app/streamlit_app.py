@@ -119,6 +119,18 @@ section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #1F1B3A 0%, #2D2755 100%);
 }
 section[data-testid="stSidebar"] * { color: #F1F0FF !important; }
+
+/* st.code() renders on a light background regardless of theme — the broad
+   rule above forces light text everywhere, which makes code blocks in the
+   sidebar unreadable (light text on light background). Override specifically
+   for code blocks so they stay dark-on-light and legible. */
+section[data-testid="stSidebar"] pre,
+section[data-testid="stSidebar"] code,
+section[data-testid="stSidebar"] pre * ,
+section[data-testid="stSidebar"] code * {
+    color: #1a1a2e !important;
+    background-color: #f0f0f5 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
