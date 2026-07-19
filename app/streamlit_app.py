@@ -140,8 +140,8 @@ def load_metadata():
 
 
 @st.cache_resource
-def load_searcher(embeddings_path, use_faiss=False):
-    return SimilaritySearcher(embeddings_path, use_faiss=use_faiss)
+def load_searcher(embeddings_path):
+    return SimilaritySearcher(embeddings_path)
 
 
 @st.cache_resource
@@ -316,17 +316,6 @@ with st.sidebar:
         "Confidence threshold", min_value=0.0, max_value=1.0, value=0.35, step=0.05,
         help="If the best match scores below this, we flag it as an out-of-domain / low-confidence result."
     )
-    use_faiss = st.toggle(
-        "⚡ Use FAISS index",
-        value=False,
-        help="Exact nearest-neighbor search via FAISS instead of scikit-learn cosine similarity. "
-             "Same results, built for scaling to much larger galleries."
-    )
-    show_gradcam = st.toggle(
-        "🔥 Explain top match (Grad-CAM)",
-        value=False,
-        help="Show a heatmap of which parts of your query image drove the similarity to the #1 result."
-    )
     st.markdown("---")
     st.markdown(
         "**Baseline** — raw pretrained CNN features.\n\n"
@@ -403,7 +392,7 @@ with tab_search:
                         if not os.path.exists(path):
                             st.caption("Not trained yet.")
                             continue
-                        searcher = load_searcher(path, use_faiss=use_faiss)
+                        searcher = load_searcher(path)
                         with st.spinner("Searching..."):
                             t0 = time.perf_counter()
                             q_emb = get_query_embedding(query_image, name)
@@ -419,7 +408,7 @@ with tab_search:
                     "Run the corresponding pipeline stage first (see README)."
                 )
             else:
-                searcher = load_searcher(embeddings_path, use_faiss=use_faiss)
+                searcher = load_searcher(embeddings_path)
                 with st.spinner("Extracting features & searching..."):
                     t0 = time.perf_counter()
                     query_embedding = get_query_embedding(query_image, model_choice)
@@ -429,8 +418,7 @@ with tab_search:
                 with col_results:
                     top_score = results[0]["score"] if results else 0.0
                     st.subheader(f"Top-{k} similar products")
-                    st.caption(f"⏱ Query processed in {elapsed_ms:.1f} ms  ·  Model: {model_choice}"
-                               + ("  ·  ⚡ FAISS" if use_faiss else ""))
+                    st.caption(f"⏱ Query processed in {elapsed_ms:.1f} ms  ·  Model: {model_choice}")
 
                     if top_score < confidence_threshold:
                         st.markdown(
@@ -446,35 +434,6 @@ with tab_search:
                     for i, r in enumerate(results):
                         with cols[i % 5]:
                             render_product_card(r["id"], i + 1, r["score"])
-
-                    if show_gradcam and results:
-                        st.markdown("---")
-                        st.markdown("#### 🔥 Why did the top result match?")
-                        try:
-                            from src.gradcam import compute_similarity_gradcam, overlay_heatmap
-                            gradcam_model = get_embedding_model(model_choice)
-                            preprocessed = preprocess_pil(query_image)
-                            target_row = results[0]["row"]
-                            target_embedding = searcher.embeddings[target_row]
-                            heatmap = compute_similarity_gradcam(gradcam_model, preprocessed, target_embedding)
-                            original_resized = np.array(query_image.convert("RGB").resize(config.IMG_SIZE))
-                            overlay = overlay_heatmap(original_resized, heatmap)
-
-                            gc1, gc2 = st.columns(2)
-                            with gc1:
-                                st.image(original_resized, caption="Your query image", use_container_width=True)
-                            with gc2:
-                                st.image(
-                                    overlay,
-                                    caption=f"Regions driving the match to '{id_to_name.get(results[0]['id'], results[0]['id'])}'",
-                                    use_container_width=True,
-                                )
-                            st.caption(
-                                "Red/yellow = regions of your image that most increased similarity to the "
-                                "#1 result. Blue = regions that mattered least."
-                            )
-                        except Exception as e:
-                            st.caption(f"Grad-CAM explanation unavailable for this model/image ({e}).")
     else:
         st.info("👆 Upload an image to get started. Try the **Compare all 3 models** toggle in the sidebar for the most impressive view.")
         st.markdown("#### Browse example products from the gallery")
