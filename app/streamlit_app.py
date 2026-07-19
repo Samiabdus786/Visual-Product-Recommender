@@ -25,7 +25,8 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(PROJECT_ROOT)
 import config  # noqa: E402
 from src.preprocessing import preprocess_pil  # noqa: E402
 from src.baseline_similarity import SimilaritySearcher  # noqa: E402
@@ -140,8 +141,8 @@ def load_metadata():
 
 
 @st.cache_resource
-def load_searcher(embeddings_path):
-    return SimilaritySearcher(embeddings_path)
+def load_searcher(embeddings_path, use_faiss=False):
+    return SimilaritySearcher(embeddings_path, use_faiss=use_faiss)
 
 
 @st.cache_resource
@@ -296,7 +297,13 @@ if not os.path.exists(config.SUBSET_METADATA_CSV):
     st.stop()
 
 df = load_metadata()
-id_to_path = dict(zip(df["id"], df["image_path"]))
+# Rebuild paths fresh as ABSOLUTE paths anchored to this script's own location
+# (PROJECT_ROOT), rather than a relative path that depends on whatever the
+# current working directory happens to be when the app is launched. Relying
+# on relative + cwd was the root cause of images not resolving on Streamlit
+# Cloud — this sidesteps that ambiguity entirely.
+_subset_images_dir_abs = os.path.join(PROJECT_ROOT, config.SUBSET_IMAGES_DIR)
+id_to_path = {row_id: os.path.join(_subset_images_dir_abs, f"{row_id}.jpg") for row_id in df["id"]}
 id_to_name = dict(zip(df["id"], df.get("productDisplayName", df["id"])))
 id_to_category = dict(zip(df["id"], df["articleType"]))
 
@@ -316,6 +323,17 @@ with st.sidebar:
         "Confidence threshold", min_value=0.0, max_value=1.0, value=0.35, step=0.05,
         help="If the best match scores below this, we flag it as an out-of-domain / low-confidence result."
     )
+    use_faiss = st.toggle(
+        "⚡ Use FAISS index",
+        value=False,
+        help="Exact nearest-neighbor search via FAISS instead of scikit-learn cosine similarity. "
+             "Same results, built for scaling to much larger galleries."
+    )
+    show_gradcam = st.toggle(
+        "🔥 Explain top match (Grad-CAM)",
+        value=False,
+        help="Show a heatmap of which parts of your query image drove the similarity to the #1 result."
+    )
     st.markdown("---")
     st.markdown(
         "**Baseline** — raw pretrained CNN features.\n\n"
@@ -325,6 +343,18 @@ with st.sidebar:
     )
     st.markdown("---")
     st.caption(f"Gallery size: {len(df)} products across {df['articleType'].nunique()} categories")
+
+    with st.expander("🐛 Debug info", expanded=False):
+        sample_id = df["id"].iloc[0]
+        sample_path = id_to_path.get(sample_id, "N/A")
+        st.code(
+            f"cwd: {os.getcwd()}\n"
+            f"PROJECT_ROOT: {PROJECT_ROOT}\n"
+            f"SUBSET_IMAGES_DIR (from config): {config.SUBSET_IMAGES_DIR}\n"
+            f"Sample resolved path: {sample_path}\n"
+            f"Sample path exists: {os.path.exists(sample_path)}",
+            language="text",
+        )
 
 embeddings_path = MODEL_OPTIONS[model_choice]
 
@@ -340,8 +370,13 @@ def render_product_card(pid, rank, score):
     color = score_color(score)
     crown = "🏆 " if rank == 1 else ""
     st.markdown('<div class="product-card">', unsafe_allow_html=True)
-    if pid in id_to_path and os.path.exists(id_to_path[pid]):
-        st.image(id_to_path[pid], use_container_width=True)
+    img_path = id_to_path.get(pid)
+    if img_path and os.path.exists(img_path):
+        st.image(img_path, use_container_width=True)
+    else:
+        # Show WHY, instead of just leaving a silent blank space — makes this
+        # diagnosable instead of a mystery if it happens again.
+        st.caption(f"⚠️ image not found:\n`{os.path.basename(img_path) if img_path else pid}`")
     st.markdown(
         f'<span class="rank-badge">{rank}</span>'
         f'<b>{crown}{str(id_to_name.get(pid, pid))[:26]}</b>',
@@ -392,7 +427,7 @@ with tab_search:
                         if not os.path.exists(path):
                             st.caption("Not trained yet.")
                             continue
-                        searcher = load_searcher(path)
+                        searcher = load_searcher(path, use_faiss=use_faiss)
                         with st.spinner("Searching..."):
                             t0 = time.perf_counter()
                             q_emb = get_query_embedding(query_image, name)
@@ -408,7 +443,7 @@ with tab_search:
                     "Run the corresponding pipeline stage first (see README)."
                 )
             else:
-                searcher = load_searcher(embeddings_path)
+                searcher = load_searcher(embeddings_path, use_faiss=use_faiss)
                 with st.spinner("Extracting features & searching..."):
                     t0 = time.perf_counter()
                     query_embedding = get_query_embedding(query_image, model_choice)
@@ -418,7 +453,8 @@ with tab_search:
                 with col_results:
                     top_score = results[0]["score"] if results else 0.0
                     st.subheader(f"Top-{k} similar products")
-                    st.caption(f"⏱ Query processed in {elapsed_ms:.1f} ms  ·  Model: {model_choice}")
+                    st.caption(f"⏱ Query processed in {elapsed_ms:.1f} ms  ·  Model: {model_choice}"
+                               + ("  ·  ⚡ FAISS" if use_faiss else ""))
 
                     if top_score < confidence_threshold:
                         st.markdown(
@@ -434,6 +470,35 @@ with tab_search:
                     for i, r in enumerate(results):
                         with cols[i % 5]:
                             render_product_card(r["id"], i + 1, r["score"])
+
+                    if show_gradcam and results:
+                        st.markdown("---")
+                        st.markdown("#### 🔥 Why did the top result match?")
+                        try:
+                            from src.gradcam import compute_similarity_gradcam, overlay_heatmap
+                            gradcam_model = get_embedding_model(model_choice)
+                            preprocessed = preprocess_pil(query_image)
+                            target_row = results[0]["row"]
+                            target_embedding = searcher.embeddings[target_row]
+                            heatmap = compute_similarity_gradcam(gradcam_model, preprocessed, target_embedding)
+                            original_resized = np.array(query_image.convert("RGB").resize(config.IMG_SIZE))
+                            overlay = overlay_heatmap(original_resized, heatmap)
+
+                            gc1, gc2 = st.columns(2)
+                            with gc1:
+                                st.image(original_resized, caption="Your query image", use_container_width=True)
+                            with gc2:
+                                st.image(
+                                    overlay,
+                                    caption=f"Regions driving the match to '{id_to_name.get(results[0]['id'], results[0]['id'])}'",
+                                    use_container_width=True,
+                                )
+                            st.caption(
+                                "Red/yellow = regions of your image that most increased similarity to the "
+                                "#1 result. Blue = regions that mattered least."
+                            )
+                        except Exception as e:
+                            st.caption(f"Grad-CAM explanation unavailable for this model/image ({e}).")
     else:
         st.info("👆 Upload an image to get started. Try the **Compare all 3 models** toggle in the sidebar for the most impressive view.")
         st.markdown("#### Browse example products from the gallery")
