@@ -1,3 +1,6 @@
+#Live Link:
+https://visual-appuct-recommender-vueqmanj.streamlit.app
+
 # Visual Product Recommender
 
 An image-based recommendation system that retrieves visually similar
